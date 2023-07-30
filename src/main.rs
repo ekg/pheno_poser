@@ -3,8 +3,10 @@ use rust_htslib::bcf::{Reader, Read, record};
 use csv::Reader as CsvReader;
 use clap::Parser;
 //use statrs::statistics::PCA;
-use ndarray::Array2;
-use petal_decomposition::{Pca, RandomizedPcaBuilder};
+use pca::PCA;
+use ndarray::{Array2, s};
+//use ndarray::arr2;
+//use petal_decomposition::{Pca, PcaBuilder, RandomizedPcaBuilder};
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 
 
@@ -109,10 +111,14 @@ fn main() {
     for i in 0..genotypes_length {
         let mut is_constant = true;
         let mut last_value = 0;
-        for (_sample, genotype) in sample_genotypes.iter() {
-            if i == 0 {
-                last_value = genotype[i];
-            } else if genotype[i] != last_value {
+        // iterate over all samples, accessing the genotype at this offset
+        for j in 0..sample_names.len() {
+            let sample = sample_names.get(j).unwrap();
+            let genotype = sample_genotypes.get(sample).unwrap();
+            let value = genotype.get(i).unwrap();
+            if j == 0 {
+                last_value = *value;
+            } else if last_value != *value {
                 is_constant = false;
                 break;
             }
@@ -136,30 +142,75 @@ fn main() {
     eprintln!("Number of samples: {}", filtered_genotypes.len());
     eprintln!("Number of SNPs: {}", filtered_genotypes.values().next().unwrap().len());
 
-    // Perform PCA
-    let pca_data: Vec<Vec<f64>> = filtered_genotypes
-        .values()
-        .map(|v| v.iter().map(|g| *g as f64).collect())
-        .collect();
-    // transpose pca_data
-    let pca_data: Vec<Vec<f64>> = (0..pca_data[0].len())
-        .map(|i| pca_data.iter().map(|row| row[i]).collect())
-        .collect();
+    let mut pca_data = Vec::new();
+    for (_sample, genotype) in sample_genotypes.iter() {
+        let mut pca_sample = Vec::new();
+        for (i, g) in genotype.iter().enumerate() {
+            if !constant_columns.contains(&i) {
+                pca_sample.push(*g as f64);
+            }
+        }
+        pca_data.push(pca_sample);
+    }
+
+    // Check for NaN or infinite values
+    for (i, row) in pca_data.iter().enumerate() {
+        if row.iter().any(|&x| x.is_nan() || x.is_infinite()) {
+            eprintln!("Row {} contains NaN or infinite values!", i);
+            return; // or handle the error as you prefer
+        }
+    }
+
+    // save the array to disk in a TSV file
+    use std::fs::File;
+    use std::io::Write;
+    let mut pca_data_file = File::create("pca_data.tsv").unwrap();
+    for row in pca_data.iter() {
+        for (i, value) in row.iter().enumerate() {
+            if i > 0 {
+                pca_data_file.write_all(b"\t").unwrap();
+            }
+            pca_data_file.write_all(format!("{}", value).as_bytes()).unwrap();
+        }
+        pca_data_file.write_all(b"\n").unwrap();
+    }
 
     eprintln!("Building input array...");
-    let x = Array2::from_shape_vec((pca_data.len(), pca_data[0].len()), pca_data.iter().flatten().cloned().collect()).unwrap();
+    // build the array, remembering that we have things in the format of rows of samples (each a vector) and columns of SNPs
+    let x = Array2::from_shape_vec((pca_data.len(), pca_data[0].len()), pca_data.into_iter().flatten().collect()).unwrap();
 
-    eprintln!("Performing PCA...");    
-    let mut pca = RandomizedPcaBuilder::new(cli.pca_dims).build(); // Keep N dimensions.
-    pca.fit(&x).unwrap();
+    eprintln!("First few rows of x:");
+    for row in x.slice(s![..3, ..]).rows() {
+        eprintln!("{:?}", row);
+    }
+    
+    //let x = Array2::from_shape_vec((pca_data[0].len(), pca_data.len()), pca_data.iter().flatten().cloned().collect()).unwrap();
 
-    eprintln!("Explained variance: {:?}", pca.explained_variance_ratio());
+    eprintln!("Performing PCA...");
+    let mut pca = PCA::new();
+    pca.fit(x.clone(), None).unwrap();
+
+    let components = pca.transform(x).unwrap();
+    // print dimensions
+    eprintln!("Components shape: {:?}", components.shape());
+    // slice to the first cli.pca_dims
+    let components = components.slice(s![.., ..cli.pca_dims]).to_owned();
+    eprintln!("Components sliced shape: {:?}", components.shape());
+
+    // print a slice of the components for debugging
+    //eprintln!("{:?}", components.slice(s![..10, ..]));
+    
+    //let mut pca = RandomizedPcaBuilder::new(cli.pca_dims).build(); // Keep N dimensions.
+    //let mut pca = PcaBuilder::new(cli.pca_dims).build(); // Keep N dimensions.
+    //pca.fit(&x).unwrap();
+
+    //eprintln!("Explained variance: {:?}", pca.explained_variance_ratio());
     //let _s = pca.singular_values();            // [2_f64, 0_f64]
     //let _v = pca.explained_variance_ratio();   // [1_f64, 0_f64]
     //let _y = pca.transform(&x).unwrap();       // [-2_f64.sqrt(), 0_f64, 2_f64.sqrt()]
 
     eprintln!("Collecting components...");
-    let components = pca.components();
+    //let components = pca.components();
 
     // Build GLM model
     // follow this model let data = vec![("Y", y), ("X1", x1), ("X2", x2), ("X3", x3)];
@@ -194,15 +245,53 @@ fn main() {
     for (i, pc) in pcs.iter().enumerate() {
         eprintln!("{}, {}, {}", i, pc, data[i+1].1.len());
     }
+
+    // Write the header line
+    print!("sample\tphenotype\tresidual");
+    // Write columns for each PC
+    for i in 0..cli.pca_dims {
+        print!("\tPC{}", i+1);
+    }
+    for snp_id in snp_ids {
+        print!("\t{}", snp_id);
+    }
+    println!();
     
+    let mut sample_phenotype = HashMap::new();
+    for record in phenotype_records {
+        let sample = String::from(record.get(0).unwrap());
+        let phenotype = String::from(record.get(1).unwrap());
+        sample_phenotype.insert(sample, phenotype);
+    }
+
+    for (i, (sample_bytes, genotypes)) in sample_genotypes.iter().enumerate() {
+        // convert &[u8] to string
+        let sample = String::from_utf8_lossy(sample_bytes).into_owned();
+        if let Some(phenotype) = sample_phenotype.get(&sample) {
+            eprintln!("Sample {} has phenotype {}", sample, phenotype);
+            print!("{}\t{}\t{}", sample, phenotype, 0);
+            // print out the PCs
+            for j in 0..cli.pca_dims {
+                print!("\t{}", components.row(i)[j]);
+            }
+            for genotype in genotypes {
+                print!("\t{}", genotype);
+            }
+            println!();
+        }
+    }
+
+    eprintln!("Done!");
+
+    /*
     eprintln!("Building GLM model...");
 
     let data = RegressionDataBuilder::new().build_from(data).unwrap();        
     //let formula = "Y ~ X1 + X2 + X3";
     let model = FormulaRegressionBuilder::new().data(&data).data_columns("Y", pcs).fit().unwrap();
-    let parameters: Vec<_> = model.iter_parameter_pairs().collect();
-    let pvalues: Vec<_> = model.iter_p_value_pairs().collect();
-    let standard_errors: Vec<_> = model.iter_se_pairs().collect();
+    let _parameters: Vec<_> = model.iter_parameter_pairs().collect();
+    let _pvalues: Vec<_> = model.iter_p_value_pairs().collect();
+    let _standard_errors: Vec<_> = model.iter_se_pairs().collect();
 
     // get the residuals for each sample
     let residuals = model.residuals();
@@ -210,6 +299,10 @@ fn main() {
     
     // Write the header line
     print!("sample\tphenotype\tresidual");
+    // Write columns for each PC
+    for i in 0..cli.pca_dims {
+        print!("\tPC{}", i+1);
+    }
     for snp_id in snp_ids {
         print!("\t{}", snp_id);
     }
@@ -229,11 +322,16 @@ fn main() {
         let sample = String::from_utf8_lossy(sample_bytes).into_owned();
         if let Some(phenotype) = sample_phenotype.get(&sample) {
             print!("{}\t{}\t{}", sample, phenotype, residuals[i]);
+            // print out the PCs
+            for j in 0..cli.pca_dims {
+                print!("\t{}", components.row(j)[i]);
+            }
             for genotype in genotypes {
                 print!("\t{}", genotype);
             }
             println!();
         }
-    }
+}
+    */
 
 }

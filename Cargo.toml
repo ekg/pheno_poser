@@ -1,5 +1,5 @@
 [package]
-name = "vcf_pheno_pose"
+name = "pheno_poser"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,6 +10,5 @@ clap = { version = "4.3.19", features = ["derive"] }
 csv = "1.2.2"
 linregress = "0.5.2"
 ndarray = { version = "0.15.6", features = ["blas"] }
-#ndarray-glm = { version = "0.0.12", features = ["openblas-static"] }
-petal-decomposition = { version = "0.6.2", features = ["openblas-static"] }
+pca = "0.1.4"
 rust-htslib = "0.44.1"
