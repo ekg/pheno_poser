@@ -1,4 +1,4 @@
-# vcf_pheno_poser
+# pheno_poser
 
 This program takes a VCF file of genotypes and a CSV file of phenotypes as input. It performs the following steps:
 
