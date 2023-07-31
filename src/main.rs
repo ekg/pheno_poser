@@ -30,6 +30,9 @@ struct Cli {
     /// Use this random seed (default 1926)
     #[arg(short, long, default_value = "1926")]
     random_seed: u64,
+    /// Oversampling factor for randomized PCA
+    #[arg(short, long, default_value = "20")]
+    oversampling: usize,
     /// Use a full-rank PCA rather than randomized PCA
     #[arg(short, long)]
     full_pca: bool,
@@ -205,7 +208,7 @@ fn main() {
     if cli.full_pca {
         pca.fit(x.clone(), None).unwrap();
     } else {
-        pca.rfit(x.clone(), cli.pca_dims, cli.pca_dims*10, Some(cli.random_seed), None).unwrap();
+        pca.rfit(x.clone(), cli.pca_dims, cli.pca_dims*cli.oversampling, Some(cli.random_seed), None).unwrap();
     }
 
     let components = pca.transform(x).unwrap();
