@@ -48,9 +48,12 @@ fn main() {
     let sample_names = header.samples().to_vec();
     //let sample_names = sample_binding.iter().map(|s| s.to_owned());
     
-    let mut sample_genotypes: HashMap<&[u8], Vec<i32>> = HashMap::new();
+    let mut sample_genotypes: Vec<Vec<i8>> = Vec::new();
+    // map from sample name to index in sample genotypes
+    let mut sample_binding: HashMap<&[u8], usize> = HashMap::new();
     for sample in sample_names.clone() {
-        sample_genotypes.insert(sample, Vec::new());
+        sample_binding.insert(sample, sample_genotypes.len());
+        sample_genotypes.push(Vec::new());
     }
 
     let mut snp_ids: Vec<String> = Vec::new();
@@ -90,7 +93,7 @@ fn main() {
                 }
             }
             let s = sample_names.get(sample_index).unwrap();
-            sample_genotypes.get_mut(s).unwrap().push(n_alt);
+            sample_genotypes[*sample_binding.get(s).unwrap()].push(n_alt as i8);
         }
     }
 
@@ -107,8 +110,8 @@ fn main() {
 
     // first, we get the length of the genotype vectors from the first sample
     let mut sample_genotype_lengths = Vec::new();
-    for (_sample, genotype) in sample_genotypes.iter() {
-        sample_genotype_lengths.push(genotype.len());
+    for genotypes in sample_genotypes.iter() {
+        sample_genotype_lengths.push(genotypes.len());
     }
     // assert they are all equal in length
     assert!(sample_genotype_lengths.iter().all(|&item| item == sample_genotype_lengths[0]));
@@ -126,8 +129,8 @@ fn main() {
         // iterate over all samples, accessing the genotype at this offset
         for j in 0..sample_names.len() {
             let sample = sample_names.get(j).unwrap();
-            let genotype = sample_genotypes.get(sample).unwrap();
-            let value = genotype.get(i).unwrap();
+            let genotypes = &sample_genotypes[*sample_binding.get(sample).unwrap()];
+            let value = genotypes.get(i).unwrap();
             if j == 0 {
                 last_value = *value;
             } else if last_value != *value {
@@ -140,24 +143,10 @@ fn main() {
         }
     }
 
-    let mut filtered_genotypes = HashMap::new();
-    for (sample, genotype) in sample_genotypes.iter() {
-        let mut filtered_genotype = Vec::new();
-        for (i, g) in genotype.iter().enumerate() {
-            if !constant_columns.test(i) {
-                filtered_genotype.push(*g);
-            }
-        }
-        filtered_genotypes.insert(sample, filtered_genotype);
-    }
-
-    eprintln!("Number of samples: {}", filtered_genotypes.len());
-    eprintln!("Number of SNPs: {}", filtered_genotypes.values().next().unwrap().len());
-
     let mut pca_data = Vec::new();
-    for (_sample, genotype) in sample_genotypes.iter() {
+    for genotypes in sample_genotypes.iter() {
         let mut pca_sample = Vec::new();
-        for (i, g) in genotype.iter().enumerate() {
+        for (i, g) in genotypes.iter().enumerate() {
             if !constant_columns.test(i) {
                 pca_sample.push(*g as f64);
             }
@@ -302,9 +291,9 @@ fn main() {
         sample_phenotype.insert(sample, phenotype);
     }
 
-    for (i, (sample_bytes, genotypes)) in sample_genotypes.iter().enumerate() {
+    for (i, genotypes) in sample_genotypes.iter().enumerate() {
         // convert &[u8] to string
-        let sample = String::from_utf8_lossy(sample_bytes).into_owned();
+        let sample = String::from_utf8_lossy(sample_names[i]).into_owned();
         if let Some(phenotype) = sample_phenotype.get(&sample) {
             print!("{}\t{}\t{}", sample, phenotype, residuals[i]);
             // print out the PCs
