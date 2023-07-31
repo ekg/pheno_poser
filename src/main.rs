@@ -8,6 +8,8 @@ use ndarray::{Array2, s};
 //use ndarray::arr2;
 //use petal_decomposition::{Pca, PcaBuilder, RandomizedPcaBuilder};
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
+//use bitset
+use bitset::BitSet;
 
 
 #[derive(Parser)]
@@ -25,6 +27,12 @@ struct Cli {
     /// Keep this many dimensions of PCA
     #[arg(short, long, default_value = "10")]
     pca_dims: usize,
+    /// Use this random seed (default 1926)
+    #[arg(short, long, default_value = "1926")]
+    random_seed: u64,
+    /// Use a full-rank PCA rather than randomized PCA
+    #[arg(short, long)]
+    full_pca: bool,
 }
 
 fn main() {
@@ -107,7 +115,8 @@ fn main() {
 
     // now from 0 to genotypes_length, we look across samples and check if they are all the same
     // we will record the constant columns here:
-    let mut constant_columns = HashSet::new();
+    // we'll store records to these in a bitset in the length of the columns
+    let mut constant_columns = BitSet::with_capacity(genotypes_length);
     for i in 0..genotypes_length {
         let mut is_constant = true;
         let mut last_value = 0;
@@ -124,7 +133,7 @@ fn main() {
             }
         }
         if is_constant {
-            constant_columns.insert(i);
+            constant_columns.set(i, true);
         }
     }
 
@@ -132,7 +141,7 @@ fn main() {
     for (sample, genotype) in sample_genotypes.iter() {
         let mut filtered_genotype = Vec::new();
         for (i, g) in genotype.iter().enumerate() {
-            if !constant_columns.contains(&i) {
+            if !constant_columns.test(i) {
                 filtered_genotype.push(*g);
             }
         }
@@ -146,12 +155,14 @@ fn main() {
     for (_sample, genotype) in sample_genotypes.iter() {
         let mut pca_sample = Vec::new();
         for (i, g) in genotype.iter().enumerate() {
-            if !constant_columns.contains(&i) {
+            if !constant_columns.test(i) {
                 pca_sample.push(*g as f64);
             }
         }
         pca_data.push(pca_sample);
     }
+
+    eprintln!("more processing ...");
 
     // Check for NaN or infinite values
     for (i, row) in pca_data.iter().enumerate() {
@@ -161,6 +172,8 @@ fn main() {
         }
     }
 
+    /*
+    eprintln!("writing stuff to disk");
     // save the array to disk in a TSV file
     use std::fs::File;
     use std::io::Write;
@@ -174,6 +187,7 @@ fn main() {
         }
         pca_data_file.write_all(b"\n").unwrap();
     }
+    */
 
     eprintln!("Building input array...");
     // build the array, remembering that we have things in the format of rows of samples (each a vector) and columns of SNPs
@@ -188,7 +202,11 @@ fn main() {
 
     eprintln!("Performing PCA...");
     let mut pca = PCA::new();
-    pca.fit(x.clone(), None).unwrap();
+    if cli.full_pca {
+        pca.fit(x.clone(), None).unwrap();
+    } else {
+        pca.rfit(x.clone(), cli.pca_dims, cli.pca_dims*10, Some(cli.random_seed), None).unwrap();
+    }
 
     let components = pca.transform(x).unwrap();
     // print dimensions
@@ -230,7 +248,7 @@ fn main() {
         y.push(phenotype);
     }
     data.push((format!("Y"), y));
-    for (i, component) in components.rows().into_iter().enumerate() {
+    for (i, component) in components.columns().into_iter().enumerate() {
         let mut component_data = Vec::new();
         for (j, value) in component.iter().enumerate() {
             component_data.push(*value);
@@ -246,44 +264,8 @@ fn main() {
         eprintln!("{}, {}, {}", i, pc, data[i+1].1.len());
     }
 
-    // Write the header line
-    print!("sample\tphenotype\tresidual");
-    // Write columns for each PC
-    for i in 0..cli.pca_dims {
-        print!("\tPC{}", i+1);
-    }
-    for snp_id in snp_ids {
-        print!("\t{}", snp_id);
-    }
-    println!();
-    
-    let mut sample_phenotype = HashMap::new();
-    for record in phenotype_records {
-        let sample = String::from(record.get(0).unwrap());
-        let phenotype = String::from(record.get(1).unwrap());
-        sample_phenotype.insert(sample, phenotype);
-    }
+    //eprintln!("Done!");
 
-    for (i, (sample_bytes, genotypes)) in sample_genotypes.iter().enumerate() {
-        // convert &[u8] to string
-        let sample = String::from_utf8_lossy(sample_bytes).into_owned();
-        if let Some(phenotype) = sample_phenotype.get(&sample) {
-            eprintln!("Sample {} has phenotype {}", sample, phenotype);
-            print!("{}\t{}\t{}", sample, phenotype, 0);
-            // print out the PCs
-            for j in 0..cli.pca_dims {
-                print!("\t{}", components.row(i)[j]);
-            }
-            for genotype in genotypes {
-                print!("\t{}", genotype);
-            }
-            println!();
-        }
-    }
-
-    eprintln!("Done!");
-
-    /*
     eprintln!("Building GLM model...");
 
     let data = RegressionDataBuilder::new().build_from(data).unwrap();        
@@ -324,14 +306,13 @@ fn main() {
             print!("{}\t{}\t{}", sample, phenotype, residuals[i]);
             // print out the PCs
             for j in 0..cli.pca_dims {
-                print!("\t{}", components.row(j)[i]);
+                print!("\t{}", components.column(j)[i]);
             }
             for genotype in genotypes {
                 print!("\t{}", genotype);
             }
             println!();
         }
-}
-    */
+    }
 
 }
